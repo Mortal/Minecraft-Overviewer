@@ -44,6 +44,51 @@ This module has routines related to generating a quadtree of tiles
 
 """
 
+# dict from paths to 0/1: if 1, the path doesn't exist, if 0, the path does exist
+nonexistant = {}
+
+# FIXME this function assumes horrible things about your filesystem
+def memoizedstat(p):
+    """stat a file, but remember if a directory doesn't exist"""
+    # first, check if we previously statted p or its ancestors
+    p_ = p
+    while p_ != "/":
+        if p_ in nonexistant:
+            if 0 == nonexistant[p_]:
+                # we statted p_ and it existed
+                break
+            return 0
+        p_ = os.path.dirname(p_)
+
+    # ok, so p might exist
+    try: result = os.stat(p)
+    except OSError, e:
+        if e.errno != errno.ENOENT:
+            raise
+        # oop, it didn't. remember the fact and also stat its ancestors
+        p_ = os.path.dirname(p)
+        while p_ != "/":
+            try:
+                st = os.stat(p_)
+            except OSError, f:
+                if e.errno != errno.ENOENT:
+                    raise
+                # remember that p_ doesn't exist
+                nonexistant[p_] = 1
+                p_ = os.path.dirname(p_)
+                continue
+            # remember that p_ does exist
+            nonexistant[p_] = 0
+            break
+        return 0
+    return result
+
+def mtime(p):
+    st = memoizedstat(p)
+    if st == 0:
+        return None
+    return st[stat.ST_MTIME];
+
 def iterate_base4(d):
     """Iterates over a base 4 number with d digits"""
     return itertools.product(xrange(4), repeat=d)
@@ -293,25 +338,17 @@ class QuadtreeGen(object):
             quadPath = [[(0,0),os.path.join(dest, name, "0." + imgformat)],[(192,0),os.path.join(dest, name, "1." + imgformat)],[(0, 192),os.path.join(dest, name, "2." + imgformat)],[(192,192),os.path.join(dest, name, "3." + imgformat)]]    
        
         #stat the tile, we need to know if it exists or it's mtime
-        try:    
-            tile_mtime =  os.stat(imgpath)[stat.ST_MTIME];
-        except OSError, e:
-            if e.errno != errno.ENOENT:
-                raise
-            tile_mtime = None
-            
+        tile_mtime =  mtime(imgpath);
+
         #check mtimes on each part of the quad, this also checks if they exist
         needs_rerender = tile_mtime is None
         quadPath_filtered = []
         for path in quadPath:
-            try:
-                quad_mtime = os.stat(path[1])[stat.ST_MTIME]; 
+            quad_mtime = mtime(path[1]); 
+            if quad_mtime is not None:
                 quadPath_filtered.append(path)
                 if quad_mtime > tile_mtime:     
                     needs_rerender = True            
-            except OSError:
-                # We need to stat all the quad files, so keep looping
-                pass      
         # do they all not exist?
         if quadPath_filtered == []:
             if tile_mtime is not None:
@@ -395,13 +432,8 @@ class QuadtreeGen(object):
         imgpath = path + "." + self.imgformat
         world = self.world
         #stat the file, we need to know if it exists or it's mtime
-        try:    
-            tile_mtime =  os.stat(imgpath)[stat.ST_MTIME];
-        except OSError, e:
-            if e.errno != errno.ENOENT:
-                raise
-            tile_mtime = None
-            
+        tile_mtime =  mtime(imgpath);
+
         if not chunks:
             # No chunks were found in this tile
             if tile_mtime is not None:
